@@ -6,6 +6,7 @@ echo " Jenkins Pipeline Test Started"
 echo "=================================="
 
 echo "Running on host: $(hostname)"
+
 echo "Current directory: $(pwd)"
 echo "Current user: $(whoami)"
 echo "Build number: ${BUILD_NUMBER:-N/A}"
