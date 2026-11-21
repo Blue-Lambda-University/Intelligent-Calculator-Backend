@@ -10,7 +10,6 @@ echo "Running on host: $(hostname)"
 echo "Current directory: $(pwd)"
 echo "Current user: $(whoami)"
 echo "Build number: ${BUILD_NUMBER:-N/A}"
-
 echo "Step 1: Checking environment..."
 echo "Environment check passed!"
 
