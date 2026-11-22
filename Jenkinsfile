@@ -3,8 +3,8 @@
 //                password is the secret access key. The key needs ECR push.
 //   prod-ssh-key SSH private key. Set the credential username to the prod login
 //                (ubuntu, or ec2-user on Amazon Linux). That user must be able to run Docker.
-// Optional Jenkins environment variable:
-//   DATABASE_URL  Defaults to a SQLite file inside the container.
+// History is stored in a Postgres container named calculator-db. Its data volume
+// is calculator-db-data, so replacing the API container keeps existing rows.
 
 pipeline {
   agent { label 'docker-node-kubectl' }
@@ -37,6 +37,10 @@ pipeline {
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
+          docker container prune -f
+          docker image prune -af
+          docker builder prune -af
+          df -h /
           docker build -t "$IMAGE_SHA" -t "$IMAGE_LATEST" .
         '''
       }
@@ -83,8 +87,6 @@ pipeline {
               -o StrictHostKeyChecking=accept-new
               -o UserKnownHostsFile="$WORKSPACE/.ssh/known_hosts"
             )
-            DATABASE_URL="${DATABASE_URL:-sqlite:////tmp/calculator.db}"
-
             ecr_password() {
               docker run --rm \
                 -e AWS_ACCESS_KEY_ID \
@@ -98,19 +100,44 @@ pipeline {
               "docker login --username AWS --password-stdin '$ECR_REGISTRY'"
 
             ssh "${SSH_OPTS[@]}" "$SSH_TARGET" \
-              "DATABASE_URL=$(printf '%q' "$DATABASE_URL") COMMIT_SHA=$(printf '%q' "$SHORT_SHA") IMAGE_SHA=$(printf '%q' "$IMAGE_SHA") IMAGE_LATEST=$(printf '%q' "$IMAGE_LATEST") CONTAINER_NAME=$(printf '%q' "$CONTAINER_NAME") HOST_PORT=$(printf '%q' "$HOST_PORT") ECR_REGISTRY=$(printf '%q' "$ECR_REGISTRY") bash -s" <<'REMOTE'
+              "COMMIT_SHA=$(printf '%q' "$SHORT_SHA") IMAGE_SHA=$(printf '%q' "$IMAGE_SHA") IMAGE_LATEST=$(printf '%q' "$IMAGE_LATEST") CONTAINER_NAME=$(printf '%q' "$CONTAINER_NAME") HOST_PORT=$(printf '%q' "$HOST_PORT") ECR_REGISTRY=$(printf '%q' "$ECR_REGISTRY") bash -s" <<'REMOTE'
 set -euo pipefail
 trap 'docker logout "$ECR_REGISTRY" >/dev/null 2>&1 || true' EXIT
+docker container prune -f
+docker image prune -af
 docker pull "$IMAGE_SHA"
 docker pull "$IMAGE_LATEST"
 docker network create calculator >/dev/null 2>&1 || true
+if ! docker inspect calculator-db >/dev/null 2>&1; then
+  docker run -d \
+    --name calculator-db \
+    --network calculator \
+    --restart unless-stopped \
+    -e POSTGRES_DB=calculator \
+    -e POSTGRES_USER=calculator \
+    -e POSTGRES_PASSWORD=classroom-only-change-me \
+    -v calculator-db-data:/var/lib/postgresql/data \
+    postgres:16-alpine
+else
+  docker network connect calculator calculator-db >/dev/null 2>&1 || true
+  docker start calculator-db >/dev/null 2>&1 || true
+fi
+ready=0
+for _ in $(seq 1 30); do
+  if docker exec calculator-db pg_isready -U calculator -d calculator >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  sleep 2
+done
+test "$ready" = 1
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 docker run -d \
   --name "$CONTAINER_NAME" \
   --network calculator \
   --restart unless-stopped \
   -p "${HOST_PORT}:8000" \
-  -e "DATABASE_URL=${DATABASE_URL}" \
+  -e DATABASE_URL=postgresql+psycopg://calculator:classroom-only-change-me@calculator-db:5432/calculator \
   -e APP_ENV=production \
   -e "COMMIT_SHA=${COMMIT_SHA}" \
   -e BUILD_VERSION=1.0.0 \
@@ -119,7 +146,7 @@ if docker inspect calculator-frontend >/dev/null 2>&1; then
   docker network connect calculator calculator-frontend >/dev/null 2>&1 || true
 fi
 ok=0
-for _ in 1 2 3 4 5; do
+for _ in $(seq 1 15); do
   if curl -fsS "http://127.0.0.1:${HOST_PORT}/health/ready" >/dev/null; then
     ok=1
     break
