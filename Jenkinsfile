@@ -37,9 +37,22 @@ pipeline {
       steps {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
-          docker container prune -f
-          docker image prune -af
-          docker builder prune -af
+          (
+            flock 9
+            attempt=1
+            while true; do
+              if docker container prune -f && docker image prune -af && docker builder prune -af; then
+                break
+              fi
+              if [ "$attempt" -ge 10 ]; then
+                echo "Docker prune stayed busy. Continuing so the build can start."
+                break
+              fi
+              echo "Another prune is still running. Waiting ${attempt}/10."
+              attempt=$((attempt + 1))
+              sleep 10
+            done
+          ) 9>/tmp/calculator-docker-prune.lock
           df -h /
           docker build -t "$IMAGE_SHA" -t "$IMAGE_LATEST" .
         '''
@@ -103,8 +116,22 @@ pipeline {
               "COMMIT_SHA=$(printf '%q' "$SHORT_SHA") IMAGE_SHA=$(printf '%q' "$IMAGE_SHA") IMAGE_LATEST=$(printf '%q' "$IMAGE_LATEST") CONTAINER_NAME=$(printf '%q' "$CONTAINER_NAME") HOST_PORT=$(printf '%q' "$HOST_PORT") ECR_REGISTRY=$(printf '%q' "$ECR_REGISTRY") bash -s" <<'REMOTE'
 set -euo pipefail
 trap 'docker logout "$ECR_REGISTRY" >/dev/null 2>&1 || true' EXIT
-docker container prune -f
-docker image prune -af
+(
+  flock 9
+  attempt=1
+  while true; do
+    if docker container prune -f && docker image prune -af; then
+      break
+    fi
+    if [ "$attempt" -ge 10 ]; then
+      echo "Docker prune stayed busy. Continuing so the pull can start."
+      break
+    fi
+    echo "Another prune is still running. Waiting ${attempt}/10."
+    attempt=$((attempt + 1))
+    sleep 10
+  done
+) 9>/tmp/calculator-docker-prune.lock
 docker pull "$IMAGE_SHA"
 docker pull "$IMAGE_LATEST"
 docker network create calculator >/dev/null 2>&1 || true
