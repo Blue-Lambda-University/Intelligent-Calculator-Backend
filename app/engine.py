@@ -20,7 +20,7 @@ def checked(value):
     return value
 
 def evaluate(expression: str) -> float:
-    trace('ENGINE', 'Evaluating expression', expression_length=len(expression))
+    trace('ENGINE', 'Evaluating expression', expression=expression)
     if not expression or len(expression) > MAX_LENGTH:
         raise ValueError("Expression length must be between 1 and 256")
     try:
@@ -38,7 +38,10 @@ def evaluate(expression: str) -> float:
                 raise ValueError("Exponent exceeds safe limits")
             if isinstance(node.op,(ast.Div,ast.Mod)) and b==0:
                 raise ValueError("Division by zero")
-            try: return checked(BINARY[type(node.op)](a,b))
+            try:
+                value = checked(BINARY[type(node.op)](a,b))
+                trace('ENGINE', 'Binary operation', operator=type(node.op).__name__, left=a, right=b, result=value)
+                return value
             except (OverflowError,ZeroDivisionError) as exc: raise ValueError("Invalid numeric operation") from exc
         if isinstance(node, ast.UnaryOp) and type(node.op) in UNARY:
             return checked(UNARY[type(node.op)](visit(node.operand,depth+1)))
@@ -48,7 +51,7 @@ def evaluate(expression: str) -> float:
     return result
 
 def scientific(operation: str, value: float, second: float | None = None, angle_mode: str='degrees') -> float:
-    trace('ENGINE', 'Scientific calculation started')
+    trace('ENGINE', 'Scientific calculation started', operation=operation, value=value, second=second, angle_mode=angle_mode)
     checked(value)
     if angle_mode not in ('degrees','radians'):
         raise ValueError("Invalid angle mode")
@@ -93,8 +96,8 @@ def interpret(text: str) -> tuple[str,float,str]:
     for pattern,kind in patterns:
         match=re.fullmatch(pattern,prompt)
         if not match: continue
-        trace('ENGINE', 'Natural language rule matched', rule=kind)
         vals=match.groups()
+        trace('ENGINE', 'Natural language rule matched', rule=kind, operands=vals)
         if kind=='percent':
             a,b=map(float,vals); result=scientific('percent',a,b)
             return f'{b} * {a} / 100',result,f'{a}% of {b} is {result:g}.'
