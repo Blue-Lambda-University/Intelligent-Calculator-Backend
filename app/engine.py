@@ -1,4 +1,5 @@
 """Allowlisted math parser: no eval/exec or arbitrary function calls."""
+from app.trace import trace
 import ast
 import math
 import operator
@@ -19,6 +20,7 @@ def checked(value):
     return value
 
 def evaluate(expression: str) -> float:
+    trace('ENGINE', 'Evaluating expression', expression_length=len(expression))
     if not expression or len(expression) > MAX_LENGTH:
         raise ValueError("Expression length must be between 1 and 256")
     try:
@@ -41,9 +43,12 @@ def evaluate(expression: str) -> float:
         if isinstance(node, ast.UnaryOp) and type(node.op) in UNARY:
             return checked(UNARY[type(node.op)](visit(node.operand,depth+1)))
         raise ValueError("Unsupported expression")
-    return float(visit(tree.body))
+    result = float(visit(tree.body))
+    trace('ENGINE', 'Arithmetic result', result=result)
+    return result
 
 def scientific(operation: str, value: float, second: float | None = None, angle_mode: str='degrees') -> float:
+    trace('ENGINE', 'Scientific calculation started')
     checked(value)
     if angle_mode not in ('degrees','radians'):
         raise ValueError("Invalid angle mode")
@@ -88,6 +93,7 @@ def interpret(text: str) -> tuple[str,float,str]:
     for pattern,kind in patterns:
         match=re.fullmatch(pattern,prompt)
         if not match: continue
+        trace('ENGINE', 'Natural language rule matched', rule=kind)
         vals=match.groups()
         if kind=='percent':
             a,b=map(float,vals); result=scientific('percent',a,b)
