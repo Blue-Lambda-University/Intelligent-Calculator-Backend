@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from uuid import uuid4
-from fastapi import FastAPI, Depends, HTTPException, Header, Query
+from fastapi import FastAPI, Depends, HTTPException, Header, Query, Request
+from app.trace import trace, request_id
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import select, delete, text
@@ -20,6 +21,19 @@ async def lifespan(app: FastAPI):
 app=FastAPI(title='Intelligent Calculator API',version='1.0.0',lifespan=lifespan)
 # Browser UI normally accesses the same-origin Next.js BFF. Local direct access is explicit.
 app.add_middleware(CORSMiddleware,allow_origins=['http://localhost:3000'],allow_methods=['GET','POST','DELETE'],allow_headers=['Content-Type','X-Session-ID'])
+
+@app.middleware("http")
+async def trace_request(request: Request, call_next):
+    incoming = request.headers.get("X-Request-ID", "")
+    token = request_id.set(incoming if incoming and len(incoming) <= 64 and incoming.isascii() and incoming.replace("-", "").isalnum() else str(uuid4()))
+    try:
+        trace("FASTAPI", "Request received", method=request.method, path=request.url.path)
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id.get()
+        trace("FASTAPI", "Response returned", status=response.status_code)
+        return response
+    finally:
+        request_id.reset(token)
 
 def db_session():
     db=SessionLocal()
@@ -40,34 +54,44 @@ class AIRequest(BaseModel):
     prompt: str=Field(min_length=1,max_length=500)
 
 def save(db,session,mode,expression,result,original_input=None,explanation=None):
+    trace('DATABASE', 'Saving calculation', mode=mode, expression=expression, result=result, original_input=original_input, explanation=explanation)
     item=Calculation(session_id=session,mode=mode,expression=expression,result=f'{result:.14g}',original_input=original_input,explanation=explanation)
     db.add(item);db.commit();db.refresh(item)
-    return {"id":item.id,"mode":mode,"expression":expression,"result":result,"explanation":explanation,"created_at":item.created_at.isoformat()}
+    trace('DATABASE', 'Calculation committed', id=item.id, mode=mode, expression=item.expression, stored_result=item.result)
+    response = {"id":item.id,"mode":mode,"expression":expression,"result":result,"explanation":explanation,"created_at":item.created_at.isoformat()}
+    trace('FASTAPI', 'Response payload', payload=response)
+    return response
 
 def bad(exc):
+    trace('FASTAPI', 'Calculation rejected', error_type=type(exc).__name__, message=str(exc))
     raise HTTPException(status_code=422,detail={"code":"CALCULATION_ERROR","message":str(exc)}) from exc
 
 @app.post('/api/v1/calculate')
 def calculate(payload:BasicRequest,db:Session=Depends(db_session),session:str=Depends(current_session)):
+    trace('FASTAPI', 'Basic calculation received', payload=payload.model_dump())
     try: result=evaluate(payload.expression)
     except ValueError as exc: bad(exc)
     return save(db,session,'basic',payload.expression,result)
 
 @app.post('/api/v1/scientific')
 def calculate_scientific(payload:ScientificRequest,db:Session=Depends(db_session),session:str=Depends(current_session)):
+    trace('FASTAPI', 'Scientific calculation received', payload=payload.model_dump())
     try: result=scientific(payload.operation,payload.value,payload.second,payload.angle_mode)
     except (ValueError, OverflowError) as exc: bad(exc)
     return save(db,session,'scientific',f'{payload.operation}({payload.value}{", "+str(payload.second) if payload.second is not None else ""})',result)
 
 @app.post('/api/v1/ai/calculate')
 async def ai_calculate(payload:AIRequest,db:Session=Depends(db_session),session:str=Depends(current_session)):
+    trace('FASTAPI', 'AI calculation received; calling MCP', payload=payload.model_dump())
     # Real in-memory MCP client tool call; deterministic interpretation means CI needs no LLM key.
     try:
         async with Client(mcp) as client:
+            trace('MCP CLIENT', 'Calling tool', tool='interpret_math_request', arguments={'prompt': payload.prompt})
             tool_result = await client.call_tool('interpret_math_request', {'prompt': payload.prompt})
         if tool_result.is_error:
             raise ValueError('Agent tool rejected the calculation')
         data = tool_result.data
+        trace('FASTAPI', 'MCP response received', payload=data)
         expression, result, explanation = data['expression'], data['result'], data['explanation']
     except (ValueError, KeyError, TypeError) as exc:
         bad(exc)
