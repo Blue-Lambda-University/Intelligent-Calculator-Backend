@@ -54,41 +54,44 @@ class AIRequest(BaseModel):
     prompt: str=Field(min_length=1,max_length=500)
 
 def save(db,session,mode,expression,result,original_input=None,explanation=None):
-    trace('DATABASE', 'Saving calculation', mode=mode, result=result)
+    trace('DATABASE', 'Saving calculation', mode=mode, expression=expression, result=result, original_input=original_input, explanation=explanation)
     item=Calculation(session_id=session,mode=mode,expression=expression,result=f'{result:.14g}',original_input=original_input,explanation=explanation)
     db.add(item);db.commit();db.refresh(item)
-    trace('DATABASE', 'Calculation committed', mode=mode)
-    return {"id":item.id,"mode":mode,"expression":expression,"result":result,"explanation":explanation,"created_at":item.created_at.isoformat()}
+    trace('DATABASE', 'Calculation committed', id=item.id, mode=mode, expression=item.expression, stored_result=item.result)
+    response = {"id":item.id,"mode":mode,"expression":expression,"result":result,"explanation":explanation,"created_at":item.created_at.isoformat()}
+    trace('FASTAPI', 'Response payload', payload=response)
+    return response
 
 def bad(exc):
-    trace('FASTAPI', 'Calculation rejected', error_type=type(exc).__name__)
+    trace('FASTAPI', 'Calculation rejected', error_type=type(exc).__name__, message=str(exc))
     raise HTTPException(status_code=422,detail={"code":"CALCULATION_ERROR","message":str(exc)}) from exc
 
 @app.post('/api/v1/calculate')
 def calculate(payload:BasicRequest,db:Session=Depends(db_session),session:str=Depends(current_session)):
-    trace('FASTAPI', 'Basic calculation received', expression_length=len(payload.expression))
+    trace('FASTAPI', 'Basic calculation received', payload=payload.model_dump())
     try: result=evaluate(payload.expression)
     except ValueError as exc: bad(exc)
     return save(db,session,'basic',payload.expression,result)
 
 @app.post('/api/v1/scientific')
 def calculate_scientific(payload:ScientificRequest,db:Session=Depends(db_session),session:str=Depends(current_session)):
-    trace('FASTAPI', 'Scientific calculation received')
+    trace('FASTAPI', 'Scientific calculation received', payload=payload.model_dump())
     try: result=scientific(payload.operation,payload.value,payload.second,payload.angle_mode)
     except (ValueError, OverflowError) as exc: bad(exc)
     return save(db,session,'scientific',f'{payload.operation}({payload.value}{", "+str(payload.second) if payload.second is not None else ""})',result)
 
 @app.post('/api/v1/ai/calculate')
 async def ai_calculate(payload:AIRequest,db:Session=Depends(db_session),session:str=Depends(current_session)):
-    trace('FASTAPI', 'AI calculation received; calling MCP', prompt_length=len(payload.prompt))
+    trace('FASTAPI', 'AI calculation received; calling MCP', payload=payload.model_dump())
     # Real in-memory MCP client tool call; deterministic interpretation means CI needs no LLM key.
     try:
         async with Client(mcp) as client:
+            trace('MCP CLIENT', 'Calling tool', tool='interpret_math_request', arguments={'prompt': payload.prompt})
             tool_result = await client.call_tool('interpret_math_request', {'prompt': payload.prompt})
         if tool_result.is_error:
             raise ValueError('Agent tool rejected the calculation')
-        trace('FASTAPI', 'MCP response received')
         data = tool_result.data
+        trace('FASTAPI', 'MCP response received', payload=data)
         expression, result, explanation = data['expression'], data['result'], data['explanation']
     except (ValueError, KeyError, TypeError) as exc:
         bad(exc)
