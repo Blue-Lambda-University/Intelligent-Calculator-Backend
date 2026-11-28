@@ -38,7 +38,7 @@ run:
 	  echo "Replacing existing container $(CONTAINER)"; \
 	  docker rm -f "$(CONTAINER)"; \
 	fi
-	docker run -d --name "$(CONTAINER)" -p "127.0.0.1:$(PORT):8000" -e APP_ENV=development -e "DATABASE_URL=$(DOCKER_DATABASE_URL)" "$(IMAGE)"
+	docker run --name "$(CONTAINER)" -p "127.0.0.1:$(PORT):8000" -e APP_ENV=development -e "DATABASE_URL=$(DOCKER_DATABASE_URL)" "$(IMAGE)"
 
 up:
 	$(MAKE) build
