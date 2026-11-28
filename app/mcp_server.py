@@ -1,5 +1,6 @@
 """FastMCP tools reusable by MCP clients; REST calculator shares the engine."""
 from fastmcp import FastMCP
+from app.trace import trace
 from app.engine import evaluate, scientific, interpret
 mcp = FastMCP("Intelligent Calculator", instructions="Use calculator tools for mathematical answers; do not calculate in the language model.")
 
@@ -16,7 +17,9 @@ def scientific_calculation(operation: str, value: float, second: float | None = 
 @mcp.tool()
 def interpret_math_request(prompt: str) -> dict:
     """Interpret a small set of natural language arithmetic requests deterministically."""
+    trace('MCP', 'interpret_math_request invoked', prompt_length=len(prompt))
     expression,result,explanation=interpret(prompt)
+    trace('MCP', 'Tool result ready', result=result)
     return {"expression":expression,"result":result,"explanation":explanation}
 
 if __name__ == '__main__':
