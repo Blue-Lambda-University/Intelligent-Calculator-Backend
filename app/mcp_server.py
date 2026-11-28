@@ -17,9 +17,9 @@ def scientific_calculation(operation: str, value: float, second: float | None = 
 @mcp.tool()
 def interpret_math_request(prompt: str) -> dict:
     """Interpret a small set of natural language arithmetic requests deterministically."""
-    trace('MCP', 'interpret_math_request invoked', prompt_length=len(prompt))
+    trace('MCP', 'interpret_math_request invoked', arguments={'prompt': prompt})
     expression,result,explanation=interpret(prompt)
-    trace('MCP', 'Tool result ready', result=result)
+    trace('MCP', 'Tool result ready', expression=expression, result=result, explanation=explanation)
     return {"expression":expression,"result":result,"explanation":explanation}
 
 if __name__ == '__main__':
